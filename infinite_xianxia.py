@@ -200,6 +200,18 @@ class Player:
     quest_cultivate: int = 0
     quest_calm: int = 0
     quest_claimed: bool = False
+    stamina: float = 72.0
+    aura: float = 70.0
+    fatigue: float = 0.0
+    last_action: str = ""
+    action_streak: int = 0
+    bounty_kind: str = "狼"
+    bounty_rank: str = "普通"
+    bounty_need: int = 3
+    bounty_done: int = 0
+    bounty_tier: int = 1
+    trial_realm_idx: int = 0
+    trial_points: int = 0
 
     def current_realm(self) -> RealmConfig:
         return REALMS[self.realm_idx]
@@ -242,6 +254,18 @@ class Player:
             "quest_cultivate": self.quest_cultivate,
             "quest_calm": self.quest_calm,
             "quest_claimed": self.quest_claimed,
+            "stamina": self.stamina,
+            "aura": self.aura,
+            "fatigue": self.fatigue,
+            "last_action": self.last_action,
+            "action_streak": self.action_streak,
+            "bounty_kind": self.bounty_kind,
+            "bounty_rank": self.bounty_rank,
+            "bounty_need": self.bounty_need,
+            "bounty_done": self.bounty_done,
+            "bounty_tier": self.bounty_tier,
+            "trial_realm_idx": self.trial_realm_idx,
+            "trial_points": self.trial_points,
         }
 
     @staticmethod
@@ -273,6 +297,18 @@ class Player:
             quest_cultivate=int(data.get("quest_cultivate", 0)),
             quest_calm=int(data.get("quest_calm", 0)),
             quest_claimed=bool(data.get("quest_claimed", False)),
+            stamina=float(data.get("stamina", 72.0)),
+            aura=float(data.get("aura", 70.0)),
+            fatigue=float(data.get("fatigue", 0.0)),
+            last_action=str(data.get("last_action", "")),
+            action_streak=int(data.get("action_streak", 0)),
+            bounty_kind=str(data.get("bounty_kind", "狼")),
+            bounty_rank=str(data.get("bounty_rank", "普通")),
+            bounty_need=int(data.get("bounty_need", 3)),
+            bounty_done=int(data.get("bounty_done", 0)),
+            bounty_tier=int(data.get("bounty_tier", 1)),
+            trial_realm_idx=int(data.get("trial_realm_idx", data.get("realm_idx", 0))),
+            trial_points=int(data.get("trial_points", 0)),
         )
 
 
@@ -292,6 +328,8 @@ class Monster:
 
 MONSTER_PREFIX = ["灰", "骨", "月", "裂", "幽", "雷", "虚", "天", "噬", "寒"]
 MONSTER_KIND = ["狼", "鬼", "傀", "蛇", "盗", "夜叉", "魇", "吞渊兽"]
+BOUNTY_KINDS = ["狼", "鬼", "傀", "蛇", "盗", "夜叉", "魇", "吞渊兽"]
+BOUNTY_RANKS = ["普通", "精英", "首领"]
 
 
 def cycle_cap(cycle: int) -> int:
@@ -300,14 +338,90 @@ def cycle_cap(cycle: int) -> int:
     return REBIRTH_CAPS[-1]
 
 
+def clamp_resource(value: float) -> float:
+    return clamp(value, 0.0, 100.0)
+
+
+def roll_new_bounty(player: Player, rng: random.Random, keep_tier: bool = False) -> None:
+    tier = player.bounty_tier if keep_tier else max(1, 1 + player.realm_idx // 2 + player.cycle)
+    rank_roll = rng.random() + 0.08 * tier
+    if rank_roll < 0.65:
+        rank = "普通"
+    elif rank_roll < 1.15:
+        rank = "精英"
+    else:
+        rank = "首领"
+    need = 2 + player.realm_idx // 2 + (1 if rank != "普通" else 0) + (1 if rank == "首领" else 0)
+
+    player.bounty_tier = tier
+    player.bounty_kind = rng.choice(BOUNTY_KINDS)
+    player.bounty_rank = rank
+    player.bounty_need = need
+    player.bounty_done = 0
+
+
+def action_rhythm(player: Player, action_name: str) -> Tuple[float, List[str]]:
+    if player.last_action == action_name:
+        player.action_streak += 1
+    else:
+        player.last_action = action_name
+        player.action_streak = 1
+
+    penalty = max(0.0, (player.action_streak - 2) * 0.16)
+    penalty = clamp(penalty, 0.0, 0.58)
+    lines: List[str] = []
+    if penalty > 0:
+        modify_pressure(player, 1.5 + 1.0 * penalty)
+        lines.append(
+            f"[节奏惩罚] 连续执行“{action_name}”{player.action_streak}次，收益倍率 {1.0 - penalty:.2f}。"
+        )
+    return 1.0 - penalty, lines
+
+
+def spend_resources(player: Player, stamina: float = 0.0, aura: float = 0.0, fatigue_add: float = 0.0) -> Tuple[float, List[str]]:
+    msgs: List[str] = []
+    stamina = max(0.0, stamina)
+    aura = max(0.0, aura)
+    ratio_s = 1.0 if stamina <= 0 else min(1.0, player.stamina / stamina)
+    ratio_a = 1.0 if aura <= 0 else min(1.0, player.aura / aura)
+    efficiency = min(ratio_s, ratio_a)
+
+    if stamina > 0:
+        spent_s = min(player.stamina, stamina)
+        player.stamina = clamp_resource(player.stamina - spent_s)
+    if aura > 0:
+        spent_a = min(player.aura, aura)
+        player.aura = clamp_resource(player.aura - spent_a)
+
+    if efficiency < 0.999:
+        msgs.append(f"[资源不足] 体力/灵气不足，本次效率降为 {efficiency:.2f}。")
+        modify_pressure(player, 2.0 + 6.0 * (1.0 - efficiency))
+
+    fatigue_gain = fatigue_add * (1.0 + (1.0 - efficiency) * 0.9)
+    player.fatigue = clamp_resource(player.fatigue + fatigue_gain)
+    return efficiency, msgs
+
+
+def recover_resources(player: Player, stamina: float = 0.0, aura: float = 0.0, fatigue_reduce: float = 0.0) -> None:
+    player.stamina = clamp_resource(player.stamina + max(0.0, stamina))
+    player.aura = clamp_resource(player.aura + max(0.0, aura))
+    player.fatigue = clamp_resource(player.fatigue - max(0.0, fatigue_reduce))
+
+
+def fatigue_growth_factor(player: Player) -> float:
+    return clamp(1.0 - max(0.0, player.fatigue - 20.0) * 0.006, 0.45, 1.0)
+
+
 def pressure_growth_factor(player: Player) -> float:
     p = player.demon_pressure
-    return clamp(1.0 - max(0.0, p - 35.0) * 0.008, 0.52, 1.0)
+    base = clamp(1.0 - max(0.0, p - 35.0) * 0.008, 0.52, 1.0)
+    return base * fatigue_growth_factor(player)
 
 
 def pressure_enemy_buff(player: Player) -> float:
     p = player.demon_pressure
-    return clamp(1.0 + max(0.0, p - 40.0) * 0.012, 1.0, 1.95)
+    fatigue_term = max(0.0, player.fatigue - 40.0) * 0.008
+    return clamp(1.0 + max(0.0, p - 40.0) * 0.012 + fatigue_term, 1.0, 2.10)
 
 
 def modify_pressure(player: Player, delta: float) -> None:
@@ -347,6 +461,28 @@ def quest_requirements(realm_idx: int) -> Dict[str, int]:
     }
 
 
+def trial_need(realm_idx: int) -> int:
+    return 4 + realm_idx * 2
+
+
+def reset_realm_trial(player: Player) -> None:
+    player.trial_realm_idx = player.realm_idx
+    player.trial_points = 0
+
+
+def ensure_realm_trial(player: Player) -> None:
+    if player.trial_realm_idx != player.realm_idx:
+        reset_realm_trial(player)
+
+
+def add_trial_points(player: Player, amount: int) -> int:
+    ensure_realm_trial(player)
+    cap = trial_need(player.realm_idx) + 6 + player.cycle * 2
+    old = player.trial_points
+    player.trial_points = int(clamp(player.trial_points + amount, 0, cap))
+    return player.trial_points - old
+
+
 def reset_realm_quest(player: Player) -> None:
     player.quest_realm_idx = player.realm_idx
     player.quest_hunt = 0
@@ -362,16 +498,23 @@ def ensure_realm_quest(player: Player) -> None:
 
 def quest_status_lines(player: Player) -> List[str]:
     ensure_realm_quest(player)
+    ensure_realm_trial(player)
     req = quest_requirements(player.realm_idx)
+    trial_req = trial_need(player.realm_idx)
     state = "已完成" if player.quest_claimed else "进行中"
     return [
         f"[宗门任务] 状态: {state} | 当前境界: {player.current_realm().name}",
         f"[宗门任务] 狩猎 {player.quest_hunt}/{req['hunt']} | 修炼 {player.quest_cultivate}/{req['cultivate']} | 调息 {player.quest_calm}/{req['calm']}",
+        (
+            f"[宗门任务] 当前悬赏：{player.bounty_rank}{player.bounty_kind} {player.bounty_done}/{player.bounty_need}"
+            f" | 破境资粮 {player.trial_points}/{trial_req}"
+        ),
     ]
 
 
 def maybe_complete_quest(player: Player) -> List[str]:
     ensure_realm_quest(player)
+    ensure_realm_trial(player)
     req = quest_requirements(player.realm_idx)
     if player.quest_claimed:
         return []
@@ -385,12 +528,16 @@ def maybe_complete_quest(player: Player) -> List[str]:
     player.exp += reward_exp
     modify_pressure(player, -10.0)
     player.amp_value += 0.03 + 0.01 * realm.idx
+    recover_resources(player, stamina=12.0, aura=14.0, fatigue_reduce=10.0)
     key_gain = add_key_fragments(player, 0.80 + 0.05 * realm.idx)
+    trial_gain = add_trial_points(player, 2 + realm.idx // 2)
     lines = [
         f"[任务完成] 宗门任务达成，获得修为 +{reward_exp}。",
         "[任务完成] " + gain_stats(player, reward_essence, increase_amp=False),
         f"[任务完成] 增幅值额外 +{0.03 + 0.01 * realm.idx:.2f}，心魔压强 -10。",
     ]
+    if trial_gain > 0:
+        lines.append(f"[任务完成] 破境资粮 +{trial_gain}。")
     if key_gain > 0:
         lines.append(f"[任务完成] 额外凝聚寻宝令 {key_gain} 枚。")
     return lines
@@ -451,6 +598,8 @@ def make_player(rng: random.Random) -> Player:
         health=BigNum.from_value(rng.randint(1, 9)),
     )
     reset_realm_quest(player)
+    reset_realm_trial(player)
+    roll_new_bounty(player, rng)
     return player
 
 
@@ -605,6 +754,11 @@ def apply_rebirth(player: Player, cap: int, rng: random.Random) -> List[str]:
     player.treasure_keys = 1
     player.key_fragments = 0.0
     player.treasure_cd = 0
+    player.stamina = 76.0
+    player.aura = 76.0
+    player.fatigue = 8.0
+    player.last_action = ""
+    player.action_streak = 0
 
     player.attack = BigNum.from_value(rng.randint(1, 9))
     player.defense = BigNum.from_value(rng.randint(1, 9))
@@ -617,6 +771,8 @@ def apply_rebirth(player: Player, cap: int, rng: random.Random) -> List[str]:
         apply_growth(player.defense, pulse * 0.9, player.amp_stage, player.amp_value * 0.67)
         apply_growth(player.health, pulse * 1.15, player.amp_stage, player.amp_value * 0.67)
     reset_realm_quest(player)
+    reset_realm_trial(player)
+    roll_new_bounty(player, rng)
 
     messages.append(
         f"[归零] 新起点: 攻 {player.attack.fmt()} 防 {player.defense.fmt()} 血 {player.health.fmt()} | "
@@ -627,11 +783,20 @@ def apply_rebirth(player: Player, cap: int, rng: random.Random) -> List[str]:
 
 def action_hunt(player: Player, rng: random.Random) -> List[str]:
     ensure_realm_quest(player)
+    ensure_realm_trial(player)
+    rhythm_factor, rhythm_lines = action_rhythm(player, "狩猎")
+    stamina_cost = 13.0 + 1.6 * player.realm_idx
+    aura_cost = 4.0 + 0.8 * player.realm_idx
+    resource_factor, resource_lines = spend_resources(player, stamina=stamina_cost, aura=aura_cost, fatigue_add=6.0)
+    action_factor = max(0.35, rhythm_factor * (0.65 + 0.35 * resource_factor))
+
     monster = generate_monster(player, rng)
     lines = [
         f"[狩猎] {monster.rank} {monster.name} | 怪物增幅阶 {monster.stage} | "
         f"攻 {monster.attack.fmt()} 防 {monster.defense.fmt()} 血 {monster.health.fmt()}"
     ]
+    lines.extend(rhythm_lines)
+    lines.extend(resource_lines)
     win, logs = battle(player, monster, rng)
     lines.extend(logs[:8])
     if len(logs) > 8:
@@ -641,23 +806,61 @@ def action_hunt(player: Player, rng: random.Random) -> List[str]:
     if win:
         player.wins += 1
         player.quest_hunt += 1
-        player.exp += monster.exp_reward
-        lines.append(f"[胜利] 修为 +{monster.exp_reward}")
-        lines.append("[胜利] " + gain_stats(player, monster.essence_reward))
+        reward_exp = int(monster.exp_reward * action_factor)
+        reward_essence = monster.essence_reward * action_factor
+        player.exp += reward_exp
+        lines.append(f"[胜利] 修为 +{reward_exp}（效率{action_factor:.2f}）")
+        lines.append("[胜利] " + gain_stats(player, reward_essence))
         modify_pressure(player, 5.5 + 1.5 * monster.rank_mod)
         if rng.random() < monster.shard_chance:
             shard = 0.03 + 0.02 * min(monster.rank_mod, 2)
             player.amp_value += shard
             lines.append(f"[掉落] 道则碎晶：增幅值 +{shard:.2f}")
+        trial_gain = 1 + monster.rank_mod
+        if action_factor < 0.56:
+            trial_gain = max(1, trial_gain - 1)
+        gained = add_trial_points(player, trial_gain)
+        if gained > 0:
+            lines.append(f"[历练] 破境资粮 +{gained}（当前 {player.trial_points}/{trial_need(player.realm_idx)}）。")
+        recover_resources(player, stamina=8.0 + 2.0 * monster.rank_mod, aura=4.0 + 1.2 * monster.rank_mod, fatigue_reduce=3.0)
+        if player.bounty_rank == monster.rank and player.bounty_kind in monster.name:
+            player.bounty_done += 1
+            lines.append(
+                f"[悬赏推进] 击败目标 {monster.rank}{player.bounty_kind}，进度 {player.bounty_done}/{player.bounty_need}。"
+            )
+            if player.bounty_done >= player.bounty_need:
+                tier = player.bounty_tier
+                bounty_exp = int(player.current_realm().hunt_exp * (1.6 + 0.30 * tier))
+                bounty_ess = player.current_realm().hunt_essence * (1.35 + 0.22 * tier)
+                player.exp += bounty_exp
+                lines.append(f"[悬赏完成] 修为 +{bounty_exp}")
+                lines.append("[悬赏完成] " + gain_stats(player, bounty_ess))
+                amp_gain = 0.03 + 0.01 * tier
+                player.amp_value += amp_gain
+                key_gain = add_key_fragments(player, 0.45 + 0.05 * tier)
+                lines.append(f"[悬赏完成] 增幅值 +{amp_gain:.2f}")
+                bounty_trial = add_trial_points(player, 2 + tier // 2)
+                if bounty_trial > 0:
+                    lines.append(f"[悬赏完成] 破境资粮 +{bounty_trial}。")
+                if key_gain > 0:
+                    lines.append(f"[悬赏完成] 凝聚寻宝令 {key_gain} 枚。")
+                roll_new_bounty(player, rng)
+                lines.append(
+                    f"[新悬赏] 击败 {player.bounty_need} 个「{player.bounty_rank}{player.bounty_kind}」。"
+                )
         lines.extend(advance_turn(player, fragment_gain=0.20 + 0.04 * monster.rank_mod))
     else:
         player.losses += 1
-        penalty = int(player.break_need() * 0.10)
+        penalty = int(player.break_need() * (0.08 + 0.06 * (1.0 - action_factor)))
         player.exp = max(0, player.exp - penalty)
-        consolation = max(0.45, monster.essence_reward * 0.28)
+        consolation = max(0.45, monster.essence_reward * 0.24 * action_factor)
         lines.append(f"[落败] 修为 -{penalty}")
         lines.append("[落败] " + gain_stats(player, consolation, increase_amp=False))
         modify_pressure(player, 10.0 + 2.0 * monster.rank_mod)
+        lost = add_trial_points(player, -1)
+        if lost < 0:
+            lines.append(f"[落败] 破境资粮 {lost}（当前 {player.trial_points}/{trial_need(player.realm_idx)}）。")
+        recover_resources(player, stamina=3.0, aura=2.0, fatigue_reduce=1.0)
         lines.extend(advance_turn(player, fragment_gain=0.12))
 
     lines.extend(maybe_complete_quest(player))
@@ -667,20 +870,88 @@ def action_hunt(player: Player, rng: random.Random) -> List[str]:
 
 def action_cultivate(player: Player, rng: random.Random) -> List[str]:
     ensure_realm_quest(player)
+    ensure_realm_trial(player)
+    rhythm_factor, rhythm_lines = action_rhythm(player, "修炼")
     realm = player.current_realm()
     player.quest_cultivate += 1
-    exp_gain = int(realm.cultivate_exp * (1.0 + 0.11 * player.cycle) * rng.uniform(0.88, 1.10))
-    essence = realm.cultivate_essence * (1.0 + 0.08 * player.realm_idx) * rng.uniform(0.90, 1.06)
+    aura_cost = 20.0 + 2.2 * player.realm_idx
+    stamina_cost = 5.0 + 0.8 * player.realm_idx
+    resource_factor, resource_lines = spend_resources(player, stamina=stamina_cost, aura=aura_cost, fatigue_add=11.0)
+    overheat = max(0, player.action_streak - 2)
+    overheat_factor = clamp(1.0 - 0.22 * overheat, 0.08, 1.0)
+    action_factor = max(0.06, rhythm_factor * resource_factor * fatigue_growth_factor(player) * overheat_factor)
+
+    if resource_factor < 0.45:
+        backlash = int(realm.cultivate_exp * (0.80 + 0.15 * player.realm_idx))
+        player.exp = max(0, player.exp - backlash)
+        modify_pressure(player, 10.0)
+        lines = ["[闭关失败] 灵气与体力不足，修炼反噬。", f"[闭关失败] 修为 -{backlash}，心魔压强上升。"]
+        lines.extend(rhythm_lines)
+        lines.extend(resource_lines)
+        lines.append("[闭关失败] 建议先调息或狩猎恢复资源。")
+        add_trial_points(player, -1)
+        recover_resources(player, stamina=2.5, aura=3.5, fatigue_reduce=0.0)
+        lines.extend(advance_turn(player, fragment_gain=0.14 + 0.02 * player.realm_idx))
+        lines.extend(check_story(player))
+        return lines
+
+    backlash_chance = clamp(
+        0.04
+        + 0.12 * max(0, player.action_streak - 2)
+        + 0.005 * max(0.0, player.fatigue - 35.0)
+        + 0.003 * max(0.0, player.demon_pressure - 30.0),
+        0.04,
+        0.78,
+    )
+    if rng.random() < backlash_chance:
+        backlash = int(realm.cultivate_exp * (1.0 + 0.22 * player.realm_idx + 0.35 * overheat))
+        player.exp = max(0, player.exp - backlash)
+        modify_pressure(player, 8.0 + 2.0 * overheat)
+        lines = ["[走火] 你强行冲关导致灵气逆冲。", f"[走火] 修为 -{backlash}，风险率 {backlash_chance:.0%}。"]
+        lines.extend(rhythm_lines)
+        lines.extend(resource_lines)
+        add_trial_points(player, -1)
+        if overheat >= 2 and rng.random() < 0.55:
+            intruder = generate_monster(player, rng, forced_rank_mod=1 if overheat == 2 else 2)
+            lines.append(f"[异象] 闭关波动引来 {intruder.rank}{intruder.name}。")
+            win, logs = battle(player, intruder, rng)
+            lines.extend(logs[:6])
+            if win:
+                counter_exp = int(intruder.exp_reward * 0.55)
+                player.exp += counter_exp
+                lines.append(f"[反杀] 你借劫淬体，修为回补 +{counter_exp}。")
+                gain = add_trial_points(player, 1 + intruder.rank_mod)
+                if gain > 0:
+                    lines.append(f"[反杀] 破境资粮 +{gain}。")
+            else:
+                loss = int(player.break_need() * 0.06)
+                player.exp = max(0, player.exp - loss)
+                lines.append(f"[异象败退] 再损修为 -{loss}。")
+                modify_pressure(player, 6.0)
+        recover_resources(player, stamina=2.5, aura=4.0, fatigue_reduce=0.0)
+        lines.extend(advance_turn(player, fragment_gain=0.16 + 0.02 * player.realm_idx))
+        lines.extend(check_story(player))
+        return lines
+
+    exp_gain = int(
+        realm.cultivate_exp * (1.0 + 0.11 * player.cycle) * rng.uniform(0.88, 1.10) * action_factor
+    )
+    essence = realm.cultivate_essence * (1.0 + 0.08 * player.realm_idx) * rng.uniform(0.90, 1.06) * action_factor
     player.exp += exp_gain
-    lines = [f"[修炼] 修为 +{exp_gain}", "[修炼] " + gain_stats(player, essence)]
+    lines = [f"[修炼] 修为 +{exp_gain}（效率{action_factor:.2f}）", "[修炼] " + gain_stats(player, essence)]
+    lines.extend(rhythm_lines)
+    lines.extend(resource_lines)
+    if overheat > 0:
+        lines.append(f"[火候过热] 连续闭关导致效率额外衰减至 {overheat_factor:.2f}。")
 
     if rng.random() < 0.14:
-        insight = 0.04 + 0.015 * player.realm_idx
+        insight = (0.04 + 0.015 * player.realm_idx) * (0.75 + 0.25 * action_factor)
         player.amp_value += insight
         lines.append(f"[顿悟] 增幅值 +{insight:.2f}")
 
     modify_pressure(player, -8.0)
-    lines.extend(advance_turn(player, fragment_gain=0.38 + 0.03 * player.realm_idx))
+    recover_resources(player, stamina=4.0, aura=0.0, fatigue_reduce=0.0)
+    lines.extend(advance_turn(player, fragment_gain=0.30 + 0.03 * player.realm_idx))
     lines.extend(maybe_complete_quest(player))
     lines.extend(check_story(player))
     return lines
@@ -688,11 +959,16 @@ def action_cultivate(player: Player, rng: random.Random) -> List[str]:
 
 def action_calm(player: Player) -> List[str]:
     ensure_realm_quest(player)
+    rhythm_factor, rhythm_lines = action_rhythm(player, "调息")
     lines = ["[调息] 你收束神识，压制心魔。"]
+    lines.extend(rhythm_lines)
     player.quest_calm += 1
     modify_pressure(player, -18.0)
     gain = 0.7 + 0.2 * player.cycle
     lines.append(f"[调息] 寻宝令碎片 +{gain:.2f}")
+    recover_resources(player, stamina=24.0 + 3.0 * player.cycle, aura=28.0 + 2.5 * player.cycle, fatigue_reduce=26.0)
+    if rhythm_factor < 0.90:
+        lines.append("[调息] 连续调息效果衰减，建议穿插狩猎或修炼。")
     lines.extend(advance_turn(player, fragment_gain=gain))
     lines.extend(maybe_complete_quest(player))
     return lines
@@ -729,6 +1005,8 @@ def apply_relic(player: Player, relic: str, rng: random.Random) -> str:
 
 def action_treasure(player: Player, rng: random.Random) -> List[str]:
     ensure_realm_quest(player)
+    ensure_realm_trial(player)
+    rhythm_factor, rhythm_lines = action_rhythm(player, "寻宝")
     lines: List[str] = []
     if player.treasure_cd > 0:
         lines.append(f"[寻宝] 你上次探索惊动了天机，需冷却 {player.treasure_cd} 回合。")
@@ -736,6 +1014,13 @@ def action_treasure(player: Player, rng: random.Random) -> List[str]:
     if player.treasure_keys <= 0:
         lines.append("[寻宝] 没有寻宝令。请通过修炼、狩猎或调息积攒。")
         return lines
+    resource_factor, resource_lines = spend_resources(
+        player,
+        stamina=9.0 + 1.0 * player.realm_idx,
+        aura=16.0 + 1.8 * player.realm_idx,
+        fatigue_add=8.0,
+    )
+    action_factor = max(0.35, rhythm_factor * (0.7 + 0.3 * resource_factor))
 
     player.treasure_keys -= 1
     player.treasure_cd = 2
@@ -743,42 +1028,60 @@ def action_treasure(player: Player, rng: random.Random) -> List[str]:
     realm = player.current_realm()
     quality = rng.random() + realm.treasure_bias - 0.10 * pressure_enemy_buff(player)
     lines.append(f"[寻宝] 你消耗1枚寻宝令，探索质量={quality:.2f}")
+    lines.extend(rhythm_lines)
+    lines.extend(resource_lines)
 
     if quality < 0.80:
-        exp_gain = int(realm.hunt_exp * 0.45 * (1.0 + max(0.0, quality)))
-        essence = realm.hunt_essence * 0.55 * (1.0 + 0.5 * max(0.0, quality))
+        exp_gain = int(realm.hunt_exp * 0.45 * (1.0 + max(0.0, quality)) * action_factor)
+        essence = realm.hunt_essence * 0.55 * (1.0 + 0.5 * max(0.0, quality)) * action_factor
         player.exp += exp_gain
         lines.append(f"[寻宝] 仅找到残破补给：修为 +{exp_gain}")
         lines.append("[寻宝] " + gain_stats(player, essence))
+        gain = add_trial_points(player, 1)
+        if gain > 0:
+            lines.append(f"[寻宝] 破境资粮 +{gain}。")
     elif quality < 1.25:
         relic = rng.choice(["剑骨", "玄龟甲", "龙髓", "道矩"])
         lines.append(f"[寻宝] 获得遗宝：{relic}")
         lines.append("[遗宝] " + apply_relic(player, relic, rng))
+        gain = add_trial_points(player, 1)
+        if gain > 0:
+            lines.append(f"[寻宝] 破境资粮 +{gain}。")
     elif quality < 1.55:
         lines.append("[寻宝] 阵法塌陷，天关守卫降临。")
         monster = generate_monster(player, rng, forced_rank_mod=2)
         win, logs = battle(player, monster, rng)
         lines.extend(logs[:6])
         if win:
-            reward_exp = int(monster.exp_reward * 1.25)
+            reward_exp = int(monster.exp_reward * 1.25 * action_factor)
             player.exp += reward_exp
             lines.append(f"[寻宝胜] 修为 +{reward_exp}")
-            lines.append("[寻宝胜] " + gain_stats(player, monster.essence_reward * 1.35))
+            lines.append("[寻宝胜] " + gain_stats(player, monster.essence_reward * 1.35 * action_factor))
             relic = rng.choice(["箭经", "道矩"])
             lines.append("[遗宝] " + apply_relic(player, relic, rng))
+            gain = add_trial_points(player, 3)
+            if gain > 0:
+                lines.append(f"[寻宝胜] 破境资粮 +{gain}。")
             modify_pressure(player, 11.0)
         else:
             player.exp = max(0, player.exp - int(player.break_need() * 0.14))
             lines.append("[寻宝败] 负伤撤离，修为受损。")
+            lost = add_trial_points(player, -1)
+            if lost < 0:
+                lines.append(f"[寻宝败] 破境资粮 {lost}。")
             modify_pressure(player, 14.0)
     else:
         relic = rng.choice(["箭经", "葛立恒残片"])
         lines.append(f"[寻宝] 你打开了神话宝库：{relic}")
         lines.append("[遗宝] " + apply_relic(player, relic, rng))
-        essence = realm.hunt_essence * 1.55
+        essence = realm.hunt_essence * 1.55 * action_factor
         lines.append("[寻宝] " + gain_stats(player, essence))
+        gain = add_trial_points(player, 2)
+        if gain > 0:
+            lines.append(f"[寻宝] 破境资粮 +{gain}。")
         modify_pressure(player, 13.5)
 
+    recover_resources(player, stamina=2.0, aura=2.0, fatigue_reduce=2.0)
     lines.extend(advance_turn(player, fragment_gain=0.06))
     lines.extend(check_story(player))
     return lines
@@ -786,6 +1089,8 @@ def action_treasure(player: Player, rng: random.Random) -> List[str]:
 
 def action_challenge(player: Player, rng: random.Random) -> List[str]:
     ensure_realm_quest(player)
+    ensure_realm_trial(player)
+    rhythm_factor, rhythm_lines = action_rhythm(player, "守关")
     lines: List[str] = []
     if player.realm_idx >= len(REALMS) - 1:
         lines.append("[守关] 你已到达当前已设计的最高境界，无需挑战。")
@@ -797,16 +1102,34 @@ def action_challenge(player: Player, rng: random.Random) -> List[str]:
         lines.extend(quest_status_lines(player))
         return lines
 
+    trial_req = trial_need(player.realm_idx)
+    challenge_req = max(2, int(math.ceil(trial_req * 0.55)))
+    if player.trial_points < challenge_req:
+        lines.append(
+            f"[守关] 破境资粮不足：需至少 {challenge_req}，当前 {player.trial_points}。"
+        )
+        lines.append("[守关] 请通过狩猎、悬赏或寻宝积累资粮。")
+        return lines
+
     if player.has_guardian_mark(target_realm):
         lines.append(f"[守关] 你已击败过 {REALMS[target_realm].name} 守关者。")
         return lines
 
+    resource_factor, resource_lines = spend_resources(
+        player,
+        stamina=18.0 + 1.8 * player.realm_idx,
+        aura=14.0 + 1.5 * player.realm_idx,
+        fatigue_add=10.0,
+    )
+    action_factor = max(0.40, rhythm_factor * (0.7 + 0.3 * resource_factor))
     fail_layers = min(5, int(player.guardian_failures.get(str(target_realm), 0)))
     guardian = generate_guardian(player, rng, target_realm)
     lines.append(
         f"[守关] {guardian.rank} {guardian.name} | 增幅阶 {guardian.stage} | 压制层 {fail_layers}/5 | "
         f"攻 {guardian.attack.fmt()} 防 {guardian.defense.fmt()} 血 {guardian.health.fmt()}"
     )
+    lines.extend(rhythm_lines)
+    lines.extend(resource_lines)
     win, logs = battle(player, guardian, rng)
     lines.extend(logs[:9])
     if len(logs) > 9:
@@ -816,27 +1139,35 @@ def action_challenge(player: Player, rng: random.Random) -> List[str]:
     if win:
         player.guardian_flags.add(target_realm)
         player.guardian_failures.pop(str(target_realm), None)
-        reward_exp = int(guardian.exp_reward * 0.75)
+        reward_exp = int(guardian.exp_reward * 0.75 * action_factor)
         player.exp += reward_exp
         lines.append(f"[守关胜] 获得破境印记：{REALMS[target_realm].name}")
         lines.append(f"[守关胜] 修为 +{reward_exp}")
-        lines.append("[守关胜] " + gain_stats(player, guardian.essence_reward * 0.95, increase_amp=False))
+        lines.append("[守关胜] " + gain_stats(player, guardian.essence_reward * 0.95 * action_factor, increase_amp=False))
         if rng.random() < guardian.shard_chance:
             player.amp_value += 0.08
             lines.append("[守关胜] 额外道则回响：增幅值 +0.08")
+        gain = add_trial_points(player, 2 + target_realm // 2)
+        if gain > 0:
+            lines.append(f"[守关胜] 破境资粮 +{gain}（当前 {player.trial_points}/{trial_need(player.realm_idx)}）。")
         modify_pressure(player, 9.0)
+        recover_resources(player, stamina=8.0, aura=6.0, fatigue_reduce=4.0)
         lines.extend(advance_turn(player, fragment_gain=0.22))
     else:
         new_layers = min(5, fail_layers + 1)
         player.guardian_failures[str(target_realm)] = new_layers
-        penalty = int(player.break_need() * 0.12)
+        penalty = int(player.break_need() * (0.10 + 0.05 * (1.0 - action_factor)))
         refund = int(player.break_need() * 0.05)
         player.exp = max(0, player.exp - penalty)
         player.exp += refund
         lines.append(f"[守关败] 印记未成，修为 -{penalty}，参悟回流 +{refund}。")
         lines.append(f"[守关败] 你解析了天关破绽，压制层提升到 {new_layers}/5。")
-        lines.append("[守关败] " + gain_stats(player, guardian.essence_reward * 0.25, increase_amp=False))
+        lines.append("[守关败] " + gain_stats(player, guardian.essence_reward * 0.25 * action_factor, increase_amp=False))
+        lost = add_trial_points(player, -1)
+        if lost < 0:
+            lines.append(f"[守关败] 破境资粮 {lost}。")
         modify_pressure(player, 16.0)
+        recover_resources(player, stamina=3.0, aura=3.0, fatigue_reduce=1.5)
         lines.extend(advance_turn(player, fragment_gain=0.10))
 
     lines.extend(check_story(player))
@@ -844,6 +1175,8 @@ def action_challenge(player: Player, rng: random.Random) -> List[str]:
 
 
 def action_breakthrough(player: Player, rng: random.Random) -> List[str]:
+    ensure_realm_trial(player)
+    rhythm_factor, rhythm_lines = action_rhythm(player, "突破")
     lines: List[str] = []
     if player.realm_idx >= len(REALMS) - 1:
         lines.append("[突破] 你已在无量境，暂无更高境界可突破。")
@@ -858,19 +1191,44 @@ def action_breakthrough(player: Player, rng: random.Random) -> List[str]:
         lines.append(f"[突破] 修为不足：需要 {player.break_need()}，当前 {player.exp}。")
         return lines
 
+    need_trial = trial_need(player.realm_idx)
+    if player.trial_points < need_trial:
+        lines.append(f"[突破] 破境资粮不足：需要 {need_trial}，当前 {player.trial_points}。")
+        lines.append("[突破] 请通过狩猎、悬赏、守关或寻宝积累资粮。")
+        return lines
+
+    resource_factor, resource_lines = spend_resources(
+        player,
+        stamina=14.0 + 1.5 * player.realm_idx,
+        aura=22.0 + 2.0 * player.realm_idx,
+        fatigue_add=9.0,
+    )
+    action_factor = max(0.50, rhythm_factor * (0.70 + 0.30 * resource_factor))
+
+    surplus_trial = max(0, player.trial_points - need_trial)
     player.exp -= player.break_need()
     player.realm_idx = target_realm
     reset_realm_quest(player)
+    reset_realm_trial(player)
+    roll_new_bounty(player, rng)
     realm = player.current_realm()
 
     player.amp_stage = max(player.amp_stage, realm.unlock_stage)
     player.amp_value += realm.amp_bonus
+    if surplus_trial > 0:
+        carry_amp = min(0.12, 0.015 * surplus_trial)
+        player.amp_value += carry_amp
+        lines.append(f"[突破] 富余资粮转化为道韵，增幅值额外 +{carry_amp:.2f}。")
     modify_pressure(player, 6.0)
 
     lines.append(
         f"[突破] 你踏入 {realm.name}。增幅阶={player.amp_stage}({player.stage_name()}) 增幅值={player.amp_value:.3f}"
     )
-    lines.append("[突破] " + gain_stats(player, realm.cultivate_essence * 1.10, increase_amp=False))
+    lines.extend(rhythm_lines)
+    lines.extend(resource_lines)
+    lines.append("[突破] " + gain_stats(player, realm.cultivate_essence * 1.10 * action_factor, increase_amp=False))
+    recover_resources(player, stamina=12.0, aura=10.0, fatigue_reduce=8.0)
+    lines.append(f"[新悬赏] 击败 {player.bounty_need} 个「{player.bounty_rank}{player.bounty_kind}」。")
 
     cap = cycle_cap(player.cycle)
     if player.realm_idx >= cap:
@@ -883,10 +1241,12 @@ def action_breakthrough(player: Player, rng: random.Random) -> List[str]:
 
 def status_lines(player: Player) -> List[str]:
     ensure_realm_quest(player)
+    ensure_realm_trial(player)
     realm = player.current_realm()
     cap = cycle_cap(player.cycle)
     relic_text = "，".join(f"{k}x{v}" for k, v in sorted(player.relics.items())) or "无"
     req = quest_requirements(player.realm_idx)
+    trial_req = trial_need(player.realm_idx)
     quest_state = "已完成" if player.quest_claimed else "进行中"
 
     target_realm = min(player.realm_idx + 1, len(REALMS) - 1)
@@ -895,12 +1255,25 @@ def status_lines(player: Player) -> List[str]:
 
     return [
         f"境界: {realm.name}({player.realm_idx}) | 轮回 {player.cycle} | 本轮上限 {REALMS[cap].name}",
-        f"修为: {player.exp}/{player.break_need()} | 下阶守关: {REALMS[target_realm].name}({gate_text}, 压制层{suppress}/5)",
-        f"宗门任务[{quest_state}]: 狩猎 {player.quest_hunt}/{req['hunt']} 修炼 {player.quest_cultivate}/{req['cultivate']} 调息 {player.quest_calm}/{req['calm']}",
+        (
+            f"修为: {player.exp}/{player.break_need()} | 破境资粮: {player.trial_points}/{trial_req} | "
+            f"下阶守关: {REALMS[target_realm].name}({gate_text}, 压制层{suppress}/5)"
+        ),
+        (
+            f"宗门任务[{quest_state}]: 狩猎 {player.quest_hunt}/{req['hunt']} 修炼 {player.quest_cultivate}/{req['cultivate']} "
+            f"调息 {player.quest_calm}/{req['calm']}"
+        ),
         f"攻: {player.attack.fmt()} | 防: {player.defense.fmt()} | 血: {player.health.fmt()}",
         f"增幅: 阶 {player.amp_stage}[{player.stage_name()}] 值 {player.amp_value:.3f} | 葛立恒种子 {player.graham_seed}",
-        f"心魔压强: {player.demon_pressure:.1f}/100 | 寻宝令: {player.treasure_keys}/3 (+{player.key_fragments:.2f}) | 寻宝冷却: {player.treasure_cd}",
-        f"胜败: {player.wins}/{player.losses} | 遗宝: {relic_text}",
+        (
+            f"资源: 体力 {player.stamina:.1f}/100 灵气 {player.aura:.1f}/100 疲劳 {player.fatigue:.1f}/100 "
+            f"| 心魔 {player.demon_pressure:.1f}/100"
+        ),
+        (
+            f"悬赏: {player.bounty_rank}{player.bounty_kind} {player.bounty_done}/{player.bounty_need} "
+            f"| 寻宝令 {player.treasure_keys}/3 (+{player.key_fragments:.2f}) 冷却 {player.treasure_cd} "
+            f"| 胜败 {player.wins}/{player.losses} | 遗宝: {relic_text}"
+        ),
     ]
 
 
@@ -911,9 +1284,10 @@ def help_lines() -> List[str]:
         "  cultivate / 修炼    - 稳定获取修为与灵蕴",
         "  treasure / 寻宝     - 消耗寻宝令探索遗迹（有冷却）",
         "  challenge / 守关    - 挑战下一境守关强敌，获取破境印记",
-        "  break / 突破        - 消耗修为并突破（需守关印记）",
+        "  break / 突破        - 消耗修为并突破（需守关印记+破境资粮）",
         "  calm / 调息         - 降低心魔并积攒寻宝令碎片",
         "  quest / 任务        - 查看当前境界宗门任务进度",
+        "  bounty / 悬赏       - 查看当前悬赏与奖励建议",
         "  status / 状态       - 查看当前面板",
         "  lore / 剧情         - 查看已解锁剧情",
         "  save / 保存         - 保存进度",
@@ -929,6 +1303,18 @@ def lore_lines(player: Player) -> List[str]:
     return [f"已解锁剧情标记: {', '.join(sorted(player.story_flags))}"]
 
 
+def bounty_lines(player: Player) -> List[str]:
+    ensure_realm_trial(player)
+    return [
+        f"[悬赏] 当前目标：击败 {player.bounty_need} 个「{player.bounty_rank}{player.bounty_kind}」。",
+        f"[悬赏] 当前进度：{player.bounty_done}/{player.bounty_need}（难度层级 {player.bounty_tier}）",
+        (
+            f"[悬赏] 当前破境资粮：{player.trial_points}/{trial_need(player.realm_idx)}，"
+            "完成悬赏可额外补资粮并加速破境。"
+        ),
+    ]
+
+
 def save_player(player: Player, path: Path = SAVE_PATH) -> str:
     path.write_text(json.dumps(player.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
     return f"已保存到 {path}"
@@ -941,12 +1327,18 @@ def load_player(path: Path = SAVE_PATH) -> Player:
 
 def pick_auto_action(player: Player, rng: random.Random) -> str:
     ensure_realm_quest(player)
+    ensure_realm_trial(player)
     req = quest_requirements(player.realm_idx)
+    t_need = trial_need(player.realm_idx)
+    challenge_need = max(2, int(math.ceil(t_need * 0.55)))
+
+    if player.fatigue >= 72 or player.aura <= 14 or player.stamina <= 14:
+        return "calm"
 
     if not player.quest_claimed:
         if player.quest_calm < req["calm"] and player.demon_pressure > 35:
             return "calm"
-        if player.quest_cultivate < req["cultivate"] and rng.random() < 0.60:
+        if player.quest_cultivate < req["cultivate"] and player.aura > 24 and rng.random() < 0.50:
             return "cultivate"
         if player.quest_hunt < req["hunt"] and rng.random() < 0.70:
             return "hunt"
@@ -957,11 +1349,17 @@ def pick_auto_action(player: Player, rng: random.Random) -> str:
         player.realm_idx < len(REALMS) - 1
         and player.quest_claimed
         and not player.has_guardian_mark(player.realm_idx + 1)
+        and player.trial_points >= challenge_need
         and rng.random() < 0.35
     ):
         return "challenge"
 
-    if player.exp >= player.break_need() and player.realm_idx < len(REALMS) - 1 and player.has_guardian_mark(player.realm_idx + 1):
+    if (
+        player.exp >= player.break_need()
+        and player.realm_idx < len(REALMS) - 1
+        and player.has_guardian_mark(player.realm_idx + 1)
+        and player.trial_points >= t_need
+    ):
         return "break"
 
     if player.demon_pressure >= 74:
@@ -970,12 +1368,24 @@ def pick_auto_action(player: Player, rng: random.Random) -> str:
     if player.treasure_keys > 0 and player.treasure_cd == 0 and rng.random() < 0.15:
         return "treasure"
 
-    roll = rng.random()
-    if roll < 0.48:
+    if player.quest_claimed and player.trial_points < t_need:
+        if player.bounty_done < player.bounty_need and player.stamina > 20:
+            return "hunt"
+        if player.treasure_keys > 0 and player.treasure_cd == 0 and rng.random() < 0.35:
+            return "treasure"
         return "hunt"
-    if roll < 0.86:
+
+    if player.bounty_done < player.bounty_need and player.stamina > 20 and rng.random() < 0.60:
+        return "hunt"
+
+    roll = rng.random()
+    if roll < 0.58:
+        return "hunt"
+    if roll < 0.72:
         return "cultivate"
-    return "calm"
+    if roll < 0.90:
+        return "calm"
+    return "treasure" if player.treasure_keys > 0 and player.treasure_cd == 0 else "calm"
 
 
 def run_auto(player: Player, rng: random.Random, turns: int) -> None:
@@ -1031,6 +1441,8 @@ def run_interactive(player: Player, rng: random.Random) -> None:
             lines = action_calm(player)
         elif cmd in {"quest", "任务"}:
             lines = quest_status_lines(player)
+        elif cmd in {"bounty", "悬赏"}:
+            lines = bounty_lines(player)
         elif cmd in {"status", "s", "状态"}:
             lines = status_lines(player)
         elif cmd in {"lore", "l", "剧情"}:
@@ -1068,6 +1480,18 @@ def run_interactive(player: Player, rng: random.Random) -> None:
                 player.quest_cultivate = loaded.quest_cultivate
                 player.quest_calm = loaded.quest_calm
                 player.quest_claimed = loaded.quest_claimed
+                player.stamina = loaded.stamina
+                player.aura = loaded.aura
+                player.fatigue = loaded.fatigue
+                player.last_action = loaded.last_action
+                player.action_streak = loaded.action_streak
+                player.bounty_kind = loaded.bounty_kind
+                player.bounty_rank = loaded.bounty_rank
+                player.bounty_need = loaded.bounty_need
+                player.bounty_done = loaded.bounty_done
+                player.bounty_tier = loaded.bounty_tier
+                player.trial_realm_idx = loaded.trial_realm_idx
+                player.trial_points = loaded.trial_points
                 lines = [f"已读取 {SAVE_PATH}"] + status_lines(player)
             else:
                 lines = [f"未找到存档：{SAVE_PATH}"]
