@@ -327,6 +327,7 @@ class GameUI:
             150,
             20,
             text=name,
+        self.monster_canvas.bind("<Configure>", lambda _evt: self._draw_monster())
             fill="#e8efff",
             font=("PingFang SC", 12, "bold"),
         )
@@ -474,28 +475,51 @@ class GameUI:
         self._run_action("status")
 
     def on_save(self) -> None:
-        msg = save_player(self.player)
-        self.append_log(msg)
-        self.refresh_status()
 
-    def on_load(self) -> None:
-        try:
-            if not SAVE_PATH.exists():
-                messagebox.showinfo("读档", f"未找到存档文件：{SAVE_PATH}")
-                return
-            self.player = load_player(SAVE_PATH)
-            self.append_log(f"已读取存档：{SAVE_PATH}")
-            self.refresh_status()
-        except Exception as exc:
-            messagebox.showerror("读档失败", str(exc))
+        canvas_w = max(self.monster_canvas.winfo_width(), int(self.monster_canvas.cget("width")))
+        canvas_h = max(self.monster_canvas.winfo_height(), int(self.monster_canvas.cget("height")))
+        self.monster_canvas.create_rectangle(0, 0, canvas_w, canvas_h, fill="#101932", width=0)
+        self.monster_canvas.create_text(165, 24, text=name, fill="#e8efff", font=("PingFang SC", 12, "bold"), tags=("monster_art",))
+            self.monster_canvas.create_polygon(95, 215, 165, 88, 235, 215, fill=color_base, outline="", tags=("monster_art",))
+            self.monster_canvas.create_rectangle(142, 64, 188, 84, fill="#f2ca55", outline="", tags=("monster_art",))
+            self.monster_canvas.create_oval(132, 134, 152, 154, fill=eye, outline="", tags=("monster_art",))
+            self.monster_canvas.create_oval(178, 134, 198, 154, fill=eye, outline="", tags=("monster_art",))
+            self.monster_canvas.create_oval(139, 141, 145, 147, fill=pupil, outline="", tags=("monster_art",))
+            self.monster_canvas.create_oval(185, 141, 191, 147, fill=pupil, outline="", tags=("monster_art",))
+            self.monster_canvas.create_oval(85, 110, 245, 225, fill=color_base, outline="", tags=("monster_art",))
+            self.monster_canvas.create_polygon(110, 115, 138, 74, 152, 118, fill=color_base, outline="", tags=("monster_art",))
+            self.monster_canvas.create_polygon(220, 115, 192, 74, 178, 118, fill=color_base, outline="", tags=("monster_art",))
+            self.monster_canvas.create_oval(128, 148, 146, 166, fill=eye, outline="", tags=("monster_art",))
+            self.monster_canvas.create_oval(184, 148, 202, 166, fill=eye, outline="", tags=("monster_art",))
+            self.monster_canvas.create_oval(134, 154, 140, 160, fill=pupil, outline="", tags=("monster_art",))
+            self.monster_canvas.create_oval(190, 154, 196, 160, fill=pupil, outline="", tags=("monster_art",))
+            self.monster_canvas.create_oval(100, 95, 230, 200, fill=color_base, outline="", tags=("monster_art",))
+                self.monster_canvas.create_polygon(100 + i * 18, 190, 108 + i * 18, 224, 116 + i * 18, 190, fill=color_base, outline="", tags=("monster_art",))
+            self.monster_canvas.create_oval(128, 140, 148, 160, fill=eye, outline="", tags=("monster_art",))
+            self.monster_canvas.create_oval(182, 140, 202, 160, fill=eye, outline="", tags=("monster_art",))
+            self.monster_canvas.create_oval(135, 147, 141, 153, fill=pupil, outline="", tags=("monster_art",))
+            self.monster_canvas.create_oval(189, 147, 195, 153, fill=pupil, outline="", tags=("monster_art",))
+            self.monster_canvas.create_arc(65, 130, 265, 245, start=10, extent=295, style="arc", width=18, outline=color_base, tags=("monster_art",))
+            self.monster_canvas.create_oval(183, 90, 247, 155, fill=color_base, outline="", tags=("monster_art",))
+            self.monster_canvas.create_oval(202, 114, 214, 126, fill=eye, outline="", tags=("monster_art",))
+            self.monster_canvas.create_oval(226, 114, 238, 126, fill=eye, outline="", tags=("monster_art",))
+            self.monster_canvas.create_line(237, 135, 261, 147, fill="#ff6f8f", width=3, tags=("monster_art",))
+            self.monster_canvas.create_line(261, 147, 274, 136, fill="#ff6f8f", width=2, tags=("monster_art",))
+            self.monster_canvas.create_line(261, 147, 274, 158, fill="#ff6f8f", width=2, tags=("monster_art",))
+            self.monster_canvas.create_oval(92, 105, 238, 225, fill=color_base, outline="", tags=("monster_art",))
+            self.monster_canvas.create_rectangle(116, 128, 214, 208, outline="#dce8ff", width=2, tags=("monster_art",))
+            self.monster_canvas.create_oval(134, 146, 156, 168, fill=eye, outline="", tags=("monster_art",))
+            self.monster_canvas.create_oval(174, 146, 196, 168, fill=eye, outline="", tags=("monster_art",))
+            self.monster_canvas.create_oval(142, 154, 148, 160, fill=pupil, outline="", tags=("monster_art",))
+            self.monster_canvas.create_oval(182, 154, 188, 160, fill=pupil, outline="", tags=("monster_art",))
 
-
-def main() -> None:
-    root = tk.Tk()
-    GameUI(root)
-    root.mainloop()
-
-
-if __name__ == "__main__":
-    main()
-
+        bbox = self.monster_canvas.bbox("monster_art")
+        if bbox:
+            cx = canvas_w / 2
+            art_cx = (bbox[0] + bbox[2]) / 2
+            self.monster_canvas.move("monster_art", cx - art_cx, 0)
+        bar_width = 270
+        bar_x0 = (canvas_w - bar_width) / 2
+        bar_x1 = bar_x0 + bar_width
+        bar_y0, bar_y1 = 244, 260
+        self.monster_canvas.create_text(canvas_w / 2, 252, text="威胁等级", fill="#f0f5ff", font=("PingFang SC", 9))
